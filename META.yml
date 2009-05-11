@@ -1,6 +1,6 @@
 ---
 name: Test-Apache2
-version: 0.02
+version: 0.03
 author:
   - 'KATO Kazuyoshi E<lt>kzys@8-p.infoE<gt>'
 abstract: Simple test harness of mod_perl handler
@@ -8,15 +8,18 @@ license: perl
 resources:
   license: http://dev.perl.org/licenses/
 requires:
+  APR::Pool: 0
+  APR::Table: 0
+  Class::Accessor::Fast: 0
+build_requires:
   Test::More: 0
   Test::Pod::Coverage: 0
-  perl: 0
 provides:
   Apache2::ServerUtil:
     file: lib/Test/Apache2/Override.pm
   Test::Apache2:
     file: lib/Test/Apache2.pm
-    version: 0.02
+    version: 0.03
   Test::Apache2::Override:
     file: lib/Test/Apache2/Override.pm
   Test::Apache2::RequestRec:
@@ -29,4 +32,4 @@ meta-spec:
   version: 1.2
 no_index:
   package:
-    - Test::Apache2::Override
+    - Apache2::ServerUtil
