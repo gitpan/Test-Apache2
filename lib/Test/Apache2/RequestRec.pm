@@ -7,12 +7,14 @@ use URI;
 use APR::Pool;
 use APR::Table;
 use Scalar::Util;
+use HTTP::Response;
+use IO::Scalar;
 
 __PACKAGE__->mk_accessors(
-    qw(status response_body uri location unparsed_uri)
+    qw(status uri location unparsed_uri)
 );
 __PACKAGE__->mk_ro_accessors(
-    qw(headers_in headers_out err_headers_out method)
+    qw(headers_in headers_out err_headers_out method content response_body)
 );
 
 sub new {
@@ -42,6 +44,9 @@ sub _new_from_hash_ref {
     }
     $self->{headers_in} = $headers_in;
 
+    $self->{request_body_io} = IO::Scalar->new(\$self->content);
+    $self->{response_body_io} = IO::Scalar->new(\$self->{response_body});
+
     return $self;
 }
 
@@ -54,7 +59,8 @@ sub _new_from_request {
 
     return $class->new({
         method => $req->method, uri => $req->uri,
-        headers_in => \%headers_in
+        headers_in => \%headers_in,
+        content => $req->content,
     });
 }
 
@@ -137,16 +143,68 @@ sub to_response {
     my ($self) = @_;
     my $result = HTTP::Response->new;
 
-    $result->header('Content-Type', $self->headers_out->get('Content-Type'));
+    $self->headers_out->do(sub {
+        $result->header($_[0], $_[1]);
+        return 1;
+    });
     $result->code($self->status);
+
+    $self->{response_body_io}->close;
     $result->content($self->response_body);
 
     return $result;
 }
 
+# Apache2::RequestIO
+
+sub discard_request_body {
+    my ($self) = @_;
+}
+
 sub print {
-    my ($self, $str) = @_;
-    $self->{response_body} .= $str;
+    my ($self, @args) = @_;
+    return $self->{response_body_io}->print(@args);
+}
+
+sub printf {
+    my ($self, $format, @args) = @_;
+    return $self->print(sprintf($format, @args));
+}
+
+sub puts {
+    my ($self, @args) = @_;
+    return $self->print(@args);
+}
+
+sub read {
+    my ($self, undef, $len, $offset) = @_;
+    $self->{request_body_io}->read($_[1], $len, $offset);
+}
+
+sub rflush {
+    my ($self) = @_;
+    $self->{request_body_io}->flush;
+}
+
+sub sendfile {
+    my ($self, $path, $len, $offset) = @_;
+
+    open(my $file, '<', $path);
+    my $bytes = do {
+        local $/;
+        <$file>;
+    };
+    close($file);
+
+    return $self->write($bytes, $len, $offset);
+}
+
+sub write {
+    my ($self, $bytes, $len, $offset) = @_;
+    if (! $len) {
+        $len = length $bytes;
+    }
+    return $self->{response_body_io}->write($bytes, $len, $offset);
 }
 
 1;
