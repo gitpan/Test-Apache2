@@ -1,20 +1,20 @@
 package Test::Apache2::RequestRec;
 use strict;
 use warnings;
-use base qw(Class::Accessor::Fast);
+use base qw(Test::Apache2::RequestUtil);
 
 use URI;
 use APR::Pool;
 use APR::Table;
 use Scalar::Util;
 use HTTP::Response;
-use IO::Scalar;
 
 __PACKAGE__->mk_accessors(
-    qw(status uri location unparsed_uri)
+    qw(status)
 );
 __PACKAGE__->mk_ro_accessors(
-    qw(headers_in headers_out err_headers_out method content response_body)
+    qw(headers_in headers_out err_headers_out
+       method content response_body pool)
 );
 
 sub new {
@@ -31,7 +31,12 @@ sub _new_from_hash_ref {
     my ($class, @args) = @_;
 
     my $self = $class->SUPER::new(@args);
-    $self->uri(URI->new($self->uri));
+
+    if (@args) {
+        $self->{_real_uri} = URI->new($args[0]->{uri});
+    } else {
+        $self->{_real_uri} = URI->new('http://example.com/');
+    }
 
     my $pool = APR::Pool->new;
     map {
@@ -43,9 +48,11 @@ sub _new_from_hash_ref {
         $headers_in->set($key => $value);
     }
     $self->{headers_in} = $headers_in;
+    $self->{pool} = $pool;
 
-    $self->{request_body_io} = IO::Scalar->new(\$self->content);
-    $self->{response_body_io} = IO::Scalar->new(\$self->{response_body});
+    if (! defined $self->location) {
+        $self->location($self->uri);
+    }
 
     return $self;
 }
@@ -58,30 +65,43 @@ sub _new_from_request {
     } $req->header_field_names;
 
     return $class->new({
-        method => $req->method, uri => $req->uri,
+        method => $req->method,
+        uri => $req->uri,
         headers_in => \%headers_in,
         content => $req->content,
     });
 }
 
+sub uri {
+    my ($self) = @_;
+    $self->{_real_uri}->path;
+}
+
+sub unparsed_uri {
+    my ($self) = @_;
+    $self->{_real_uri}->path_query;
+}
+
 sub get_server_port {
     my ($self) = @_;
-    $self->uri->port;
+    $self->{_real_uri}->port;
 }
 
 sub hostname {
     my ($self) = @_;
-    $self->uri->host;
+    $self->{_real_uri}->host;
 }
 
 sub path_info {
-    my ($self) = @_;
-    $self->path; # really?
+    my $self = shift;
+    my $path_info = $self->uri->path;
+    $self->uri->path(shift()) if @_;
+    return $path_info;
 }
 
 sub path {
     my ($self) = @_;
-    $self->uri->path_query;
+    $self->{_real_uri}->path_query;
 }
 
 sub header_in {
@@ -95,8 +115,10 @@ sub header_out {
 }
 
 sub content_type {
-    my ($self, $type) = @_;
-    $self->headers_out->set('Content-Type', $type);
+    my $self = shift;
+
+    $self->headers_out->set('Content-Type', shift) if @_;
+    return $self->headers_out->get('Content-Type');
 }
 
 sub send_http_header {
@@ -114,25 +136,12 @@ sub subprocess_env {
     }
 }
 
-sub dir_config {
-    my ($self, $key, $value) = @_;
-
-    if (ref $key eq 'HASH') {
-        $self->{dir_config} = $key;
-    } elsif (defined $value) {
-        $self->{dir_config}->{$key} = $value;
-    } else {
-        my $config = $self->{dir_config};
-	if ($config) {
-	    return $config->{$key};
-	}
-    }
-}
-
 sub args {
-    my ($self) = @_;
-
-    return $self->uri->query;
+    my ($self, $value) = @_;
+    if (defined $value) {
+      $self->{_real_uri}->query($value);
+    }
+    return $self->{_real_uri}->query;
 }
 
 sub set_content_length {
@@ -149,65 +158,16 @@ sub to_response {
     });
     $result->code($self->status);
 
+    # TODO: don't access superclass's variable directly
     $self->{response_body_io}->close;
+
     $result->content($self->response_body);
 
     return $result;
 }
 
-# Apache2::RequestIO
-
-sub discard_request_body {
-    my ($self) = @_;
-}
-
-sub print {
-    my ($self, @args) = @_;
-    return $self->{response_body_io}->print(@args);
-}
-
-sub printf {
-    my ($self, $format, @args) = @_;
-    return $self->print(sprintf($format, @args));
-}
-
-sub puts {
-    my ($self, @args) = @_;
-    return $self->print(@args);
-}
-
-sub read {
-    my ($self, undef, $len, $offset) = @_;
-    $self->{request_body_io}->read($_[1], $len, $offset);
-}
-
-sub rflush {
-    my ($self) = @_;
-    $self->{request_body_io}->flush;
-}
-
-sub sendfile {
-    my ($self, $path, $len, $offset) = @_;
-
-    open(my $file, '<', $path);
-    my $bytes = do {
-        local $/;
-        <$file>;
-    };
-    close($file);
-
-    return $self->write($bytes, $len, $offset);
-}
-
-sub write {
-    my ($self, $bytes, $len, $offset) = @_;
-    if (! $len) {
-        $len = length $bytes;
-    }
-    return $self->{response_body_io}->write($bytes, $len, $offset);
-}
-
 1;
+
 
 =head1 NAME
 

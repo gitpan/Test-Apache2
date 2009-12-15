@@ -6,6 +6,7 @@ __PACKAGE__->mk_accessors(qw(host));
 
 use Test::Apache2::RequestRec;
 use HTTP::Response;
+use attributes ();
 
 sub new {
     my ($class, @args) = @_;
@@ -50,7 +51,7 @@ sub _select {
     for my $hash_ref (@{ $self->{handlers} }) {
         my $index = index $path, $hash_ref->{path};
         if (defined $index && $index == 0) {
-            return  $hash_ref->{handler}, $hash_ref->{config};
+            return  $path, $hash_ref->{handler}, $hash_ref->{config};
         }
     }
 
@@ -60,14 +61,21 @@ sub _select {
 sub _request {
     my ($self, $req) = @_;
 
-    my ($class, $config) = $self->_select($req->path);
+    my ($location, $class, $config) = $self->_select($req->path);
+    $req->location($location);
     $req->dir_config($config);
 
-    my $buffer;
+    my $buffer = '';
     {
         local *STDOUT;
         open STDOUT, '>', \$buffer;
-        $class->handler($req);
+        my $handler = $class->can('handler');
+        if (grep { $_ eq 'method' } attributes::get($handler)) {
+            $class->$handler($req);
+        }
+        else {
+            $handler->($req);
+        }
     }
 
     if ($buffer) {
